@@ -93,6 +93,7 @@ All with a small task model (`gpt-5-mini`), one run per question, graded by code
 | Does it transfer? | On a 40-question sample of [QRData](https://github.com/xxxiaol/QRData) it answers 57.5%, against 22.5% for a constant guess. |
 | Did the first evolve run help? | No. Three rewrites, all worse than the original. Each included the same unrelated "cleanup" that deleted bracketed numbers from correct answers. |
 | Has any edit been adopted? | One. Reading the failures showed the model often paged through the CSV as text and never opened Python. A harness that tells it to load the file with pandas, and nudges it after two page reads, scored 91% and 87% on two sets of 45 validation questions against 80% and 76% for the original: 11 wins and 1 loss over the 90 paired questions. That edit was written by hand. The improver model has not yet produced a winner. |
+| Does that hold on questions nothing was tuned on? | Yes. On the 96 reserved test questions the original harness answers 79.2% and the adopted one 88.5%. On the same questions the adopted one was right where the original was wrong 11 times, and the reverse twice (exact paired test p = 0.022). It also cost less: $0.61 against $0.86 for the 96. |
 | Did asking a fast judge model to vet answers help? | No. It sent back right answers about as often as wrong ones, so it is off by default. |
 | Where were points lost? | Of 24 failed runs read by hand, 10 paged through the CSV as text and never opened Python. Two more failed because the sandbox was missing scikit-learn, which was a setup mistake and is fixed. |
 | How noisy is a comparison? | Repeating a run flips the outcome 18% of the time. Detecting a ten-point gain reliably needs about 220 questions. |
@@ -102,7 +103,8 @@ Things to keep in mind when reading these numbers:
 - The samples are small and the intervals are wide.
 - DABench's answer labels were first produced by a model and then checked by people. A few look wrong.
 - The sandbox image and the graders changed during the day these were taken, so earlier and later runs are not strictly comparable.
-- The one adopted harness was decided under an earlier, weaker version of the adoption rule. Its margin would also clear the current rule, but it has not yet been checked on the reserved test pool.
+- The one adopted harness was decided under an earlier, weaker version of the adoption rule. It then held up on the reserved test pool, which has now been used once. Tuning anything against that pool from here on would spoil it.
+- The test-pool comparison was run before the tool set was cut down to `python` and `read_file`, so both harnesses still had the older tools.
 
 ## Run it
 
