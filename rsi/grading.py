@@ -28,13 +28,8 @@ SHAPE_RE = re.compile(r"(@\w+|\bANSWER(?=[ \t*_`]*:))|\d+|[^\W\d_]+", re.I)
 THOUSANDS_RE = re.compile(r"(?<![\d.])\d{1,3}(?:,\d{3})+(?!\d)")
 
 
-def _number_re(integer: str):
-    # A sign counts only at the start of a token, so the dash in "1-3" or "mean-5.2" is not a minus.
-    return re.compile(r"(?<![\w.])([-+]?(?:%s(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?)(\s?%%)?" % integer)
-
-
-NUMBER_RE = _number_re(r"(?:\d{1,3}(?:,\d{3})+(?!\d)|\d+)")  # 1,234.5 is one number
-PLAIN_RE = _number_re(r"\d+")                                # 1,234 is two: for CSV text, where a comma separates cells
+# A sign counts only at the start of a token, so the dash in "1-3" or "mean-5.2" is not a minus. 1,234.5 is one number.
+NUMBER_RE = re.compile(r"(?<![\w.])([-+]?(?:(?:\d{1,3}(?:,\d{3})+(?!\d)|\d+)(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?)(\s?%)?")
 
 
 def clean(text) -> str:
@@ -42,9 +37,9 @@ def clean(text) -> str:
     return str(text or "").replace("\\", "").replace("−", "-").replace("–", "-")
 
 
-def numbers(text: str, pattern=NUMBER_RE) -> list:
+def numbers(text: str) -> list:
     """Every finite number in the text, in order, as (value, written with a % sign)."""
-    found = ((float(m.group(1).replace(",", "")), bool(m.group(2))) for m in pattern.finditer(text))
+    found = ((float(m.group(1).replace(",", "")), bool(m.group(2))) for m in NUMBER_RE.finditer(text))
     return [pair for pair in found if math.isfinite(pair[0])]
 
 

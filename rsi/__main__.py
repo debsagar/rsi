@@ -1,4 +1,4 @@
-"""Command line: `rsi serve | run | evolve | test | compare | eval`.
+"""Command line: `rsi serve | run | evolve | compare | eval`.
 
 Invariants:
 - `.env` is loaded here and nowhere else.
@@ -19,7 +19,7 @@ from pathlib import Path
 from . import broker, env, home, llm, load_env, tools
 
 HOST, PORT = "127.0.0.1", 8000
-FAMILIES = ["generated", "mathbench", "dabench"]  # for evolve, test and compare; `rsi eval` has its own list
+FAMILIES = ["generated", "mathbench", "dabench"]  # for evolve and compare; `rsi eval` has its own list
 
 
 def preflight(*model_vars: str) -> None:
@@ -70,13 +70,6 @@ def evolve(args) -> None:
                       candidate_files=args.candidate)
 
 
-def test(args) -> None:
-    from . import evolve as evolve_mod
-
-    preflight("RSI_MODEL")
-    evolve_mod.score_test(family=args.family, n=args.n, harness=args.harness)  # prints the score and the results file
-
-
 def compare(args) -> None:
     from . import evolve as evolve_mod
 
@@ -120,16 +113,11 @@ def main() -> None:
     p.add_argument("--candidate", action="append", default=[], metavar="PATH",
                    help="score this harness file instead of asking the improver (repeatable)")
     p.set_defaults(func=evolve)
-    p = sub.add_parser("test", help="score a harness on the Test split")
-    p.add_argument("--family", default="generated", choices=FAMILIES)
-    p.add_argument("--n", type=int, default=30)
-    p.add_argument("--harness", help="harness file; default: the current one in harnesses/")
-    p.set_defaults(func=test)
-    p = sub.add_parser("compare", help="score two harness files on the same Test tasks")
+    p = sub.add_parser("compare", help="score one harness file on the Test split, or two on the same Test tasks")
     p.add_argument("--family", default="generated", choices=FAMILIES)
     p.add_argument("--n", type=int, default=30)
     p.add_argument("--a", required=True, help="harness file A")
-    p.add_argument("--b", required=True, help="harness file B")
+    p.add_argument("--b", help="harness file B; without it only A is scored")
     p.set_defaults(func=compare)
     args = parser.parse_args()
     load_env()

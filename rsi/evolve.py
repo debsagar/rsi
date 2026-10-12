@@ -1,8 +1,7 @@
 """The evolution loop: ask a model to edit the harness, keep an edit only if it clearly scores better.
 
-`evolve()` runs one generation and returns its lineage row; `score_test()`
-scores a harness on the Test split (`rsi test`) and `compare()` scores two on
-the same Test tasks (`rsi compare`). Families: "generated" and "mathbench"
+`evolve()` runs one generation and returns its lineage row; `compare()` scores
+one harness, or two on the same tasks, on the Test split (`rsi compare`). Families: "generated" and "mathbench"
 (rsi.tasks, by seed) and "dabench" (rsi.evals.pool, by task id). Running and
 reusing episodes is rsi.episodes; what the improver is shown is rsi.evidence,
 how its reply becomes files is rsi.improver, the free replay check is rsi.replay.
@@ -32,7 +31,7 @@ Invariants:
   lineage entry says how many episodes were not run (`skipped`).
 - Train and Val seeds are fresh each generation; for dabench they are a
   per-generation sample of a finite pool, so generations overlap. Test tasks
-  are read only by `score_test`, and `evolve` never asks for the test pool.
+  are read only by `compare`, and `evolve` never asks for the test pool.
 - Everything is on disk under runs/evolve/gen-<n>/ and is reused: a finished
   episode is not re-run (first-draw runs in <sha12>/, the decision's in
   fresh-<sha12>/, replays in replay-<sha12>/), and a saved proposal is not
@@ -45,11 +44,11 @@ Invariants:
   under runs/, and refuses to run while harnesses/ holds a numbered file that
   no row adopted.
 - One generation at a time per home: `evolve` holds harnesses/evolve.lock for
-  its whole run and a second one refuses to start. `rsi test` and `rsi compare`
-  never write to harnesses/ or runs/evolve and read a harness file that is
-  only ever renamed into place, so they do not take that lock; each takes a
-  lock on its own runs/test/<harness_sha12>/ folder instead, so two tests of
-  one harness cannot clear each other's half-written episodes.
+  its whole run and a second one refuses to start. `rsi compare` never writes
+  to harnesses/ or runs/evolve and reads a harness file that is only ever
+  renamed into place, so it does not take that lock; it takes a lock on each
+  harness's runs/test/<harness_sha12>/ folder instead, so two tests of one
+  harness cannot clear each other's half-written episodes.
 """
 import ast
 import json
@@ -427,14 +426,14 @@ def _regraded(ctx: dict) -> str:
             "grader gives their stored answer; the current grader's reward was used.")
 
 
-def score_test(family="generated", n=30, home=None, run=run_episode, say=print, harness=None) -> dict:
-    """Score a harness (default: the current one) on the Test split. Episodes are kept under
+def _score_test(family, n, home, run, say, harness) -> dict:
+    """Score a harness file on the Test split. Episodes are kept under
     runs/test/<harness_sha12>/, so repeating the command costs nothing new; the per-task
     rewards are written next to them."""
     if n < 1:  # 0 would "score" nothing; a negative n would slice the dabench pool from its end
         raise ValueError("--n must be at least 1")
     home_dir = Path(home).resolve() if home else _home()
-    harness = Path(harness).resolve() if harness else broker.current_harness(home_dir)
+    harness = Path(harness).resolve()
     ctx = context(home_dir, "test", family, float("inf"), run)
     seeds, todo = draw(ctx, "test", n)
     with lock(ctx["root"] / sha(harness)[:12] / "lock", f"a test of {harness.name}"):
@@ -452,9 +451,11 @@ def score_test(family="generated", n=30, home=None, run=run_episode, say=print, 
     return out
 
 
-def compare(family, n, a, b, home=None, run=run_episode, say=print) -> dict:
-    """Score harness files a and b on the same Test tasks and report the paired difference."""
-    outs = [score_test(family, n, home=home, run=run, say=say, harness=path) for path in (a, b)]
+def compare(family, n, a, b=None, home=None, run=run_episode, say=print) -> dict:
+    """Score harness file a on the Test split; with b, score both on the same tasks and report the paired difference."""
+    outs = [_score_test(family, n, home, run, say, path) for path in (a, b) if path]
+    if b is None:
+        return outs[0]
     rewards = [list(out["rewards"].values()) for out in outs]
     if list(outs[0]["rewards"]) != list(outs[1]["rewards"]):
         raise RuntimeError("the two harnesses were scored on different tasks")  # cannot happen: same family, same n

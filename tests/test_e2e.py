@@ -108,7 +108,7 @@ PERMUTE = ARMS + ("both = np.concatenate([a, b])\nshuffled = np.random.default_r
 def plan(question: str, earlier: list, system: str) -> list | None:
     """The tool calls the agent makes for a question, in order; None when it cannot tell what is asked."""
     if "Do not load anything" in question:
-        return [("list_files", {}), ("python", {"code": "print(len(table))"})]
+        return [("python", {"code": "import os\nprint(sorted(os.listdir('/data')))"}), ("python", {"code": "print(len(table))"})]
     stat, follow = CHAT_STAT.search(question), FOLLOW_UP.search(question)
     if follow:  # "And the median?": the column and the file are only in the conversation so far
         stat = next((found for q in reversed(earlier) if (found := CHAT_STAT.search(q))), None)
@@ -116,7 +116,7 @@ def plan(question: str, earlier: list, system: str) -> list | None:
             return None
     if stat:
         name, (_, column, file) = (follow or stat).group(1), stat.groups()
-        return [("list_files", {}),
+        return [("read_file", {"name": file}),
                 ("python", {"code": f"import pandas as pd\ntable = pd.read_csv('/data/{file}')\nprint(table.to_string())"}),
                 ("python", {"code": f"print(round(float(table['{column}'].{name}()), 4))"})]  # `table` is from the call before
     if "runs.csv" not in question:
@@ -340,11 +340,11 @@ def scenario(tmp_path: Path, home: Path, record: Record, agent: Agent) -> None:
         other = client.post("/api/sessions").json()["id"]
         probe = ask(client, home, other, "What is len(table)? Do not load anything.")
         listing, attempt = probe["results"]
-        assert "No files are attached" in listing["result"] and "NameError: name 'table' is not defined" in attempt["result"]
+        assert listing["result"].strip() == "[]" and "NameError: name 'table' is not defined" in attempt["result"]
         assert answer_value(probe["episode"]["answer"]) == "unknown"
         facts["chat"]["median"] = {**second["facts"], "value_in_answer": answer_value(second["episode"]["answer"]),
                                    "independent_check": median}
-        facts["chat"]["other_session"] = {**probe["facts"], "files_seen": listing["result"],
+        facts["chat"]["other_session"] = {**probe["facts"], "files_seen": listing["result"].strip(),
                                           "python_said": attempt["result"].strip().splitlines()[-1]}
         record.volatile["sessions"]["other"] = other
 

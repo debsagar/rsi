@@ -88,7 +88,7 @@ def test_requests_past_a_limit_get_an_error_each_and_the_harness_can_still_answe
     path = write_harness(tmp_path, (
         "def run(task, api):\n"
         "    answers = [api.judge({}, {'q': {'type': 'noul'}}) for _ in range(13)]\n"
-        "    outs = [api.execute('list_files', {})['result'] for _ in range(14)]\n"
+        "    outs = [api.execute('read_file', {'name': 'data.csv'})['result'] for _ in range(14)]\n"
         "    api.generate([{'role': 'user', 'content': outs[-1]}])\n"
         "    api.submit(f'{answers[-2]} {answers[-1]} {outs[-1]}', [])\n"))
     jev, llm = fake_jev(0.9), scripted_llm(["I will answer with what I have."])
@@ -101,10 +101,10 @@ def test_requests_past_a_limit_get_an_error_each_and_the_harness_can_still_answe
 
 
 @pytest.mark.parametrize("body, stop_reason", [
-    ("    while True:\n        api.execute('list_files', {})\n", "tool_call_limit"),             # spins, never asks the model
+    ("    while True:\n        api.execute('read_file', {'name': 'data.csv'})\n", "tool_call_limit"),             # spins, never asks the model
     ("    while True:\n        api.judge({}, {'q': {'type': 'noul'}})\n", "judge_call_limit"),
-    ("    for _ in range(13):\n        api.execute('list_files', {})\n"                          # warned, the model was asked,
-     "    api.generate([])\n    api.execute('list_files', {})\n    api.submit('late', [])\n", "tool_call_limit"),  # and it calls again
+    ("    for _ in range(13):\n        api.execute('read_file', {'name': 'data.csv'})\n"                          # warned, the model was asked,
+     "    api.generate([])\n    api.execute('read_file', {'name': 'data.csv'})\n    api.submit('late', [])\n", "tool_call_limit"),  # and it calls again
 ])
 def test_a_harness_that_keeps_going_past_a_limit_is_stopped(dirs, tmp_path, body, stop_reason):
     jev = fake_jev(0.9)
@@ -180,7 +180,7 @@ def test_gate_rejects_once_then_accepts_and_marks_unsupported(dirs):
 
 def test_seed_harness_keeps_an_answer_the_gate_sends_back_on_the_last_step(dirs):
     # Observed: the loop ended with the answer rejected once and never offered again (stop_reason no_submit).
-    llm = scripted_llm([tool_call("list_files", {}, f"c{i}") for i in range(11)] + ["Out of steps; best answer [4]."])
+    llm = scripted_llm([tool_call("read_file", {"name": "data.csv"}, f"c{i}") for i in range(11)] + ["Out of steps; best answer [4]."])
     ep = episode(dirs, llm, jev=fake_jev(0.1))
     assert llm.calls[11]["tools"] is None  # the twelfth and last allowed model call is made without tools
     assert (ep["stop_reason"], ep["answer"], ep["unsupported"], ep["calls"]) == ("submitted", "Out of steps; best answer [4].", True, 12)
@@ -270,7 +270,7 @@ def test_malformed_tool_arguments_come_back_as_an_error_result(dirs):
 
 def test_images_are_attached_to_the_first_user_message_host_side(dirs):
     (dirs[1] / "plot.png").write_bytes(PNG)
-    llm = scripted_llm([tool_call("list_files", {}), "A plot."])
+    llm = scripted_llm([tool_call("read_file", {"name": "data.csv"}), "A plot."])
     episode(dirs, llm, task=make_task(files=["data.csv", "plot.png"]))
     for call in llm.calls:  # every model call, because the harness never holds the image
         users = [m for m in call["messages"] if m["role"] == "user"]

@@ -91,7 +91,6 @@ class Run:
     jev: Callable
     schemas: list
     call: Callable[[str, dict], str]
-    simulated: Callable[[str], bool]
     on_event: Callable | None
     gate: bool
     deadline: float  # time.monotonic() at which the run limit is reached
@@ -252,7 +251,7 @@ def _execute(run: Run, req: dict) -> dict | None:
         result = result[:keep - keep // 2] + marker(full - keep) + result[-(keep // 2):]
         fields["chars_shown"] = len(result)
     event = _emit(run, "tool_result", tool=name, call_id=call_event["id"], result=result, **fields,
-                  simulated=run.simulated(name), elapsed=round(time.monotonic() - started, 3))
+                  elapsed=round(time.monotonic() - started, 3))
     return {"result": result, "clipped": fields["clipped"], "event_id": event["id"]}
 
 
@@ -357,14 +356,13 @@ def run_episode(task: dict, harness_path: Path, run_dir: Path, files_dir: Path |
     files_dir = Path(files_dir).resolve() if files_dir else run_dir / "files"
     python = _tools.PythonSession(files_dir)  # starts no container until the python tool is first called
     if toolset is None:
-        ctx = {"files_dir": files_dir, "run_dir": run_dir, "python": python}
+        ctx = {"files_dir": files_dir, "python": python}
         schemas, call = _tools.tool_schemas(), lambda name, args: _tools.call_tool(ctx, name, args)
-        simulated = lambda name: bool(_tools.TOOLS.get(name, {}).get("simulated"))
     else:
-        (schemas, call), simulated = toolset, lambda name: False
+        schemas, call = toolset
     if gate is None:
         gate = os.environ.get("RSI_GATE") == "1"
-    run = Run(task, run_dir, files_dir, llm, jev, schemas, call, simulated, on_event, gate, started + RUN_LIMIT_S)
+    run = Run(task, run_dir, files_dir, llm, jev, schemas, call, on_event, gate, started + RUN_LIMIT_S)
     public_task = {"id": task["id"], "question": task["question"], "files": task.get("files", []), "history": task.get("history", [])}
     try:
         _emit(run, "user", text=task["question"], files=task.get("files", []))

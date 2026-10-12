@@ -1,6 +1,6 @@
 "use client";
 
-import { FlaskConical, LoaderCircle, Orbit, Scissors } from "lucide-react";
+import { LoaderCircle, Orbit, Scissors } from "lucide-react";
 import { useEffect, useMemo, useRef, type CSSProperties, type KeyboardEvent } from "react";
 import { EventDetail } from "@/components/event-detail";
 import { EventGlyph } from "@/components/event-glyph";
@@ -256,7 +256,7 @@ export function TrajectoryTimeline({
                           className="tl-marker"
                           style={{ "--c": kindOf(event).color } as CSSProperties}
                           aria-pressed={isSelected}
-                          aria-label={`Event ${event.id}, step ${event.step}: ${eventTitle(event)}${event.clipped ? ", clipped" : ""}${event.simulated ? ", simulated" : ""}`}
+                          aria-label={`Event ${event.id}, step ${event.step}: ${eventTitle(event)}${event.clipped ? ", clipped" : ""}`}
                           data-fresh={fresh.has(event.id) ? "true" : undefined}
                           tabIndex={tabbable ? 0 : -1}
                           onClick={() => onSelect(event.id)}
@@ -265,16 +265,15 @@ export function TrajectoryTimeline({
                       }
                     >
                       <EventGlyph event={event} size={event.kind === "answer" ? 22 : 17} />
-                      {event.clipped || event.simulated ? (
+                      {event.clipped ? (
                         <span className="absolute -top-1 -right-1 grid size-[15px] place-items-center rounded-[3px] border border-line bg-raised text-foreground">
-                          {event.clipped ? <Scissors className="size-2.5" aria-hidden /> : <FlaskConical className="size-2.5" aria-hidden />}
+                          <Scissors className="size-2.5" aria-hidden />
                         </span>
                       ) : null}
                     </TooltipTrigger>
                     <TooltipContent className="border bg-raised text-foreground [&>div:last-child]:hidden">
                       Event {event.id}: {eventTitle(event)}
                       {event.clipped ? " (clipped)" : ""}
-                      {event.simulated ? " (simulated)" : ""}
                     </TooltipContent>
                   </Tooltip>
                 </div>
@@ -309,10 +308,6 @@ export function TrajectoryTimeline({
         <li className="flex items-center gap-1.5">
           <Scissors className="size-3 text-foreground" aria-hidden />
           Clipped output
-        </li>
-        <li className="flex items-center gap-1.5">
-          <FlaskConical className="size-3 text-foreground" aria-hidden />
-          Simulated tool
         </li>
       </ul>
 

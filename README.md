@@ -123,7 +123,7 @@ uv run rsi run "Which arm is higher, and is it significant?" --file data.csv
 uv run rsi eval --family generated --n 40 --conditions null      # free, needs no key
 uv run rsi eval --family dabench --n 40 --conditions null,no_tools,full --budget 5
 uv run rsi evolve --family dabench --budget 8                    # one generation (worst case about 520 runs)
-uv run rsi compare --family dabench --a harnesses/000.py --b harnesses/001.py
+uv run rsi compare --family dabench --a harnesses/000.py --b harnesses/001.py   # without --b it scores one harness
 uv run pytest tests/test_e2e.py -q                               # the whole path, no paid calls
 ```
 
@@ -138,7 +138,7 @@ The benchmark files are not in this repository. Put a copy of each benchmark's d
 | `rsi/harness.py` | The seed harness. Start here: it is the file everything else exists to run and improve. |
 | `rsi/broker.py`, `rsi/transport.py` | The Execution Broker: one run, its limits, its log. |
 | `rsi/runner.py` | The few lines that run inside the harness container and hand the harness its `api`. |
-| `rsi/tools.py`, `rsi/pyloop.py` | The tools, and the Python interpreter that keeps its state for a whole run. |
+| `rsi/tools.py`, `rsi/pyloop.py` | The two tools, `python` and `read_file`, and the Python interpreter that keeps its state for a whole run. |
 | `rsi/llm.py`, `rsi/jev.py` | Model calls through litellm; the optional fast judge. |
 | `rsi/grading.py`, `rsi/tasks.py` | Graders, and a generator of small data questions with known answers. |
 | `rsi/evals.py` | Benchmarks, conditions, and reports that are recomputed from the raw run files. |

@@ -39,6 +39,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+from scipy.stats import rankdata
 
 from .grading import ANSWER_RE, EDGE, clean, numbers
 
@@ -46,7 +47,7 @@ KINDS = ["group_diff", "effect_size", "correlation", "filtered_agg"]
 LABELS = ["A_higher", "B_higher", "no_difference"]
 REL_TOL = 0.01
 ALPHA = 0.05
-N_SHUFFLES = 10_000          # same count as the assistant's compare_groups tool
+N_SHUFFLES = 10_000
 P_BAND = (0.02, 0.10)        # p-values this close to ALPHA are redrawn
 MIN_ABS_REF = 0.1            # keeps 3-decimal rounding (0.0005) inside REL_TOL
 MAX_ATTEMPTS = 200
@@ -133,7 +134,7 @@ def grade(task, text):
 
 def split_seeds(split, n, generation=0):
     """Seeds for a split. Ranges are disjoint; train and val move to a fresh
-    block each generation, test never moves so `rsi test` stays comparable."""
+    block each generation, test never moves so `rsi compare` stays comparable."""
     if split not in SPLIT_START:
         raise ValueError(f"unknown split {split!r}; use one of {list(SPLIT_START)}")
     if not 0 <= n <= SPLIT_BLOCK or not 0 <= generation < 1000:
@@ -225,19 +226,13 @@ def _effect_size(rng):
     return (cols, ask, d, {}) if abs(d) >= MIN_ABS_REF else None
 
 
-def _ranks(x):
-    """Average ranks (ties share the mean rank), as Spearman's rho requires."""
-    _, inverse, counts = np.unique(x, return_inverse=True, return_counts=True)
-    return (np.cumsum(counts) - (counts - 1) / 2.0)[inverse]
-
-
 def _correlation(rng):
     n = int(rng.integers(40, 121))
     rho = rng.choice([-1, 1]) * rng.uniform(0.15, 0.9)
     load = np.round(rng.normal(50, 10, n), 2)
     duration = np.round(12 + 2 * (rho * (load - 50) / 10 + np.sqrt(1 - rho ** 2) * rng.normal(0, 1, n)), 4)
     spearman = bool(rng.random() < 0.5)
-    x, y = (_ranks(duration), _ranks(load)) if spearman else (duration, load)
+    x, y = (rankdata(duration), rankdata(load)) if spearman else (duration, load)
     r = round(float(np.corrcoef(x, y)[0, 1]), 3)
     name = "Spearman rank correlation (average ranks for ties)" if spearman else "Pearson correlation"
     ask = f"What is the {name} between `duration` and `load`? Keep the sign. " + NUMBER_FORMAT
@@ -245,7 +240,7 @@ def _correlation(rng):
 
 
 def _filtered_agg(rng):
-    # The filter spans two files, so no single-table stats tool can answer it.
+    # The filter spans two files, so it needs a join.
     n_sites, n = int(rng.integers(8, 13)), int(rng.integers(150, 301))
     site_ids = [f"S{i + 1:02d}" for i in range(n_sites)]
     region = rng.choice(REGIONS, n_sites)

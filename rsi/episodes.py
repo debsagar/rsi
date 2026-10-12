@@ -1,4 +1,4 @@
-"""Scored episodes on disk: the machinery `rsi evolve`, `rsi test` and `rsi compare` share.
+"""Scored episodes on disk: the machinery `rsi evolve` and `rsi compare` share.
 
 `draw` names the tasks of a split, `batch` runs one harness on them and returns
 the graded episodes, reusing what is on disk. Used by rsi.evolve and rsi.replay.
@@ -11,6 +11,9 @@ Invariants:
 - An episode whose episode.json holds a reward is not re-run. Its stored
   answer is graded again with the current grader and that reward is used
   (mathbench excepted: its grade lives in the Lab of the live episode).
+- An episode that ended with `llm_error` (the provider failed) is not finished:
+  the next run does it again. After more than evals.LLM_ERRORS of them in a
+  row `batch` starts no more episodes and raises, so an outage is not scored.
 - An episode made under another model or gate setting is refused, not mixed in.
 - Nothing starts once the spend has passed the budget: `batch` raises Stop.
 - Rewards may be fractional. Every comparison of two scores uses `mean`
@@ -63,7 +66,7 @@ def context(home_dir: Path, folder: str, family: str, budget: float, run) -> dic
     # costs is keyed by run folder, so an episode met twice (the timing run,
     # then the full batch) is counted once.
     return {"home": home_dir, "root": home_dir / "runs" / folder, "family": family, "budget": budget, "run": run,
-            "costs": {}, "files": {}, "regraded": set()}
+            "costs": {}, "files": {}, "regraded": set(), "llm_errors": 0}
 
 
 @contextmanager
@@ -125,6 +128,8 @@ def batch(ctx: dict, harness: Path, todo: list, kind: str = "") -> list:
         run_dir = folder / task["id"]
         path = run_dir / "episode.json"
         episode = json.loads(path.read_text()) if path.is_file() else {}
+        if episode.get("stop_reason") == "llm_error":
+            episode = {}  # the provider failed: not finished, whatever reward was written
         # Episodes are reused by harness and task alone, so one made under another
         # model or gate setting would silently mix into this score. Refuse instead.
         now = {"model": os.environ.get("RSI_MODEL"), "gate": os.environ.get("RSI_GATE") == "1"}
@@ -141,7 +146,7 @@ def batch(ctx: dict, harness: Path, todo: list, kind: str = "") -> list:
                 episode["reward"] = reward  # episode.json is left as the record of what was written then
                 ctx["regraded"].add(str(run_dir))
         if episode.get("reward") is None:
-            if spent(ctx) > ctx["budget"]:
+            if spent(ctx) > ctx["budget"] or ctx["llm_errors"] > evals.LLM_ERRORS:
                 return None
             # A half-written folder is from an interrupted episode; the broker
             # appends to events.jsonl, so it must start from nothing.
@@ -152,11 +157,15 @@ def batch(ctx: dict, harness: Path, todo: list, kind: str = "") -> list:
             episode["reward"] = grade(task, episode.get("answer") or "")
             run_dir.mkdir(parents=True, exist_ok=True)
             path.write_text(json.dumps(episode, indent=1))
+            failing = episode["stop_reason"] == "llm_error" or ctx["llm_errors"] > evals.LLM_ERRORS  # past the limit it stays
+            ctx["llm_errors"] = ctx["llm_errors"] + 1 if failing else 0
         ctx["costs"][str(run_dir)] = episode.get("cost") or 0.0
         return episode
 
     with ThreadPoolExecutor(1 if ctx["family"] == "mathbench" else WORKERS) as pool:
         episodes = list(pool.map(one, todo))
+    if ctx["llm_errors"] > evals.LLM_ERRORS:
+        raise RuntimeError(evals.OUTAGE)
     if None in episodes:
         raise Stop(f"spend ${spent(ctx):.2f} passed the budget ${ctx['budget']:.2f}", record=False)
     return episodes

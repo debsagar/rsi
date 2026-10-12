@@ -5,10 +5,9 @@ under <RSI_HOME>/runs/evals/<eval_id>/; `summarize` and `report` rebuild every
 number from those files. Families: "generated" (rsi.tasks, Test seeds) and two
 external sets copied by `fetch`: "dabench" (InfiAgent-DABench, Apache-2.0) and
 "qrdata" (QRData, CC BY-NC 4.0: research use only, never redistribute).
-`pool` splits DABench into the train, val and test pools `rsi evolve`,
-`rsi test` and `rsi compare` draw from; `mcnemar` and `interval` are the one
-copy of the paired test and the interval. Reading an answer lives in
-rsi.grading, failure classification in rsi.failures; both are re-exported here.
+`pool` splits DABench into the train, val and test pools `rsi evolve` and
+`rsi compare` draw from; `mcnemar` and `interval` are the one copy of the
+paired test and the interval. Reading an answer lives in rsi.grading.
 
 Where grading departs from the benchmark authors' code (GRADER_VERSION in rsi.grading names
 this rule set; bump it with any change):
@@ -43,7 +42,11 @@ Invariants:
 - A condition fixes the pre-submit gate explicitly (`full` and `no_tools` on,
   `no_gate` off), so RSI_GATE never changes what an eval folder means.
 - results.jsonl is appended one row per task x condition as it finishes; a
-  finished episode is never re-run, and a folder made with another harness,
+  finished episode is never re-run. An episode that ended with `llm_error` (the
+  provider failed) is not finished: it gets no row, any row it has is ignored,
+  and the next run does it again. After more than LLM_ERRORS of them in a row
+  the run starts no more episodes and stops, saying so. A folder made with
+  another harness,
   model or task list is refused rather than mixed. A folder holding only free
   `null` rows and no episode file was made by no model, so the first paid run
   adopts it.
@@ -77,9 +80,7 @@ import pandas as pd
 from scipy.stats import binomtest
 
 from . import broker, home as _home, tasks
-from .failures import KINDS, _events, _jsonl, _targets, classify, decoy_for  # noqa: F401 (re-exported)
-from .grading import (ANSWER_RE, DA_ITEM_RE, DA_TOL, GRADER_VERSION, QR_TOL, grade_external,  # noqa: F401
-                      grade_parts, whole)
+from .grading import GRADER_VERSION, grade_external, whole
 
 # Benchmark copies live in the repo's git-ignored evals/src/ (QRData is CC BY-NC: do not redistribute).
 SRC = Path(__file__).resolve().parent.parent / "evals" / "src"
@@ -90,6 +91,7 @@ PAIRS = [("full", "no_gate"), ("full", "no_tools"), ("full", "null")]
 POOLS = {"train": 0.25, "val": 0.60, "test": 1.0}  # cumulative share of questions: 25%, 35%, 40%
 WORKERS = 4                  # episodes mostly wait on the model
 TIMING_TASKS = 2
+LLM_ERRORS = 3               # more episodes in a row than this ending with llm_error stop the run
 BOOTSTRAPS, BOOT_SEED = 10_000, 0
 Z95 = 1.959964               # normal quantile for a 95% Wilson interval
 # Fields of a results row that no grader decides: they must match the raw files whatever the grader version.
@@ -103,6 +105,24 @@ QR_QUESTION = "{description}\n\n{question}\n\nEnd your reply with one final line
 QR_FORMS = {"numerical": "one plain decimal number with no units, no thousands separators and no scientific "
                          "notation (write a percentage with a % sign)",
             "multiple_choice": "exactly one of: {options}"}
+
+
+OUTAGE = (f"more than {LLM_ERRORS} episodes in a row ended with llm_error: the model provider is failing, so the run "
+          "stopped. Those episodes are not finished; the same command runs them again")
+
+
+def _jsonl(path) -> list:
+    path = Path(path)
+    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()] if path.is_file() else []
+
+
+def _events(run_dir) -> list:
+    return _jsonl(Path(run_dir) / "events.jsonl")
+
+
+def _rows(eval_dir: Path) -> list:
+    """results.jsonl without the rows of episodes the provider failed on: those are not finished."""
+    return [row for row in _jsonl(eval_dir / "results.jsonl") if row["stop_reason"] != "llm_error"]
 
 
 # --- benchmark data -----------------------------------------------------------
@@ -203,7 +223,7 @@ def load(name: str, home=None, n=None, seed=0) -> list:
 
 
 def _with_files(task: dict, src: Path) -> dict:
-    files_dir = src.parent / "task-files" / task["id"]  # only this task's files, so list_files shows nothing else
+    files_dir = src.parent / "task-files" / task["id"]  # only this task's files, so /data holds nothing else
     files_dir.mkdir(parents=True, exist_ok=True)
     for file in task["files"]:
         if not (files_dir / file).exists():
@@ -267,24 +287,22 @@ NO_TOOLS = ([], lambda name, args: "ERROR no tools are available in this run; an
 OVERRIDES = {"full": {"gate": True}, "no_gate": {"gate": False}, "no_tools": {"gate": True, "toolset": NO_TOOLS}}
 
 
-def _row(task: dict, condition: str, episode: dict, kind=None, evidence=None, decoy=None) -> dict:
+def _row(task: dict, condition: str, episode: dict) -> dict:
     return {"task_id": task["id"], "family": task["family"], "level": task["level"], "condition": condition,
             "reward": episode["reward"], "stop_reason": episode["stop_reason"], "calls": episode.get("calls", 0),
             "tool_calls": episode.get("tool_calls", 0), "cost": episode.get("cost") or 0.0,
             "elapsed": episode.get("elapsed") or 0.0, "unsupported": bool(episode.get("unsupported")),
-            "failure_kind": kind, "evidence_event": evidence, "decoy_use": decoy, "grader_version": GRADER_VERSION}
+            "grader_version": GRADER_VERSION}
 
-
-def _episode(task: dict, condition: str, harness, eval_dir: Path, run, batch: list) -> dict:
-    """One results row, always re-graded and re-classified from the files on disk.
-    A finished episode is read, never re-run; run=None (the audit) only reads.
-    `batch` is the eval's task list: the decoy reference comes from it."""
+def _episode(task: dict, condition: str, harness, eval_dir: Path, run) -> dict:
+    """One results row, always re-graded from the files on disk.
+    A finished episode is read, never re-run; run=None (the audit) only reads."""
     if condition == "null":
         return _row(task, condition, {"reward": grade(task, null_guess(task)), "stop_reason": "null"})
     run_dir = eval_dir / condition / task["id"]
     path = run_dir / "episode.json"
     episode = json.loads(path.read_text()) if path.is_file() else {}
-    if episode.get("reward") is None:
+    if episode.get("reward") is None or episode.get("stop_reason") == "llm_error":
         if run is None:
             raise FileNotFoundError(path)
         shutil.rmtree(run_dir, ignore_errors=True)  # half-written: the broker appends to events.jsonl
@@ -296,11 +314,7 @@ def _episode(task: dict, condition: str, harness, eval_dir: Path, run, batch: li
     if condition == "no_gate" and any(e["kind"] == "submit" and not e.get("accepted", True) for e in _events(run_dir)):
         raise RuntimeError(f"{run_dir}: the gate bounced a submission under no_gate; the broker did not honour "
                            "gate=False, so this condition is not what its name says")
-    if episode["reward"] >= 1.0:
-        return _row(task, condition, episode)
-    kind, evidence = classify(task, episode, run_dir)
-    decoy = decoy_for(task, batch)
-    return _row(task, condition, episode, kind, evidence, bool(decoy) and classify(task, episode, run_dir, decoy)[0] == "use")
+    return _row(task, condition, episode)
 
 
 def _tasks(family: str, n: int, seed: int, home_dir: Path, files_root: Path) -> list:
@@ -327,7 +341,7 @@ def run_eval(family, n, conditions, home=None, seed=0, run=broker.run_episode, h
             "model": os.environ.get("RSI_MODEL"), "grader_version": GRADER_VERSION, "task_ids": [t["id"] for t in batch],
             "excluded": excluded(family, home_dir) if family != "generated" else {}}
     old = json.loads((eval_dir / "meta.json").read_text()) if (eval_dir / "meta.json").is_file() else meta
-    rows = {(r["task_id"], r["condition"]): r for r in _jsonl(eval_dir / "results.jsonl")}
+    rows = {(r["task_id"], r["condition"]): r for r in _rows(eval_dir)}
     paid = any(True for c in CONDITIONS[1:] for _ in (eval_dir / c).glob("*/episode.json"))  # a crash can leave these without a row
     if all(condition == "null" for _, condition in rows) and not paid:
         old = {**old, "model": meta["model"]}  # nothing paid so far: no model made the folder, so this run's model adopts it
@@ -337,15 +351,17 @@ def run_eval(family, n, conditions, home=None, seed=0, run=broker.run_episode, h
     eval_dir.mkdir(parents=True, exist_ok=True)
     (eval_dir / "meta.json").write_text(json.dumps(meta, indent=1))
     (eval_dir / "tasks.jsonl").write_text("".join(json.dumps(t) + "\n" for t in batch))
-    spent = [sum(r["cost"] for r in rows.values())]
+    spent, outage = [sum(r["cost"] for r in rows.values())], [0]
 
     def work(job):
         condition, task = job
         if (task["id"], condition) in rows:
             return None
-        if budget is not None and spent[0] > budget:
+        if outage[0] > LLM_ERRORS or (budget is not None and spent[0] > budget):
             return "stop"
-        return _episode(task, condition, harness, eval_dir, run, batch)
+        row = _episode(task, condition, harness, eval_dir, run)
+        outage[0] = outage[0] + 1 if row["stop_reason"] == "llm_error" or outage[0] > LLM_ERRORS else 0  # past the limit it stays
+        return row
 
     def go(jobs) -> bool:
         """Run jobs, appending each row as it arrives. False when the budget stopped any."""
@@ -353,11 +369,13 @@ def run_eval(family, n, conditions, home=None, seed=0, run=broker.run_episode, h
             done = []
             for row in pool.map(work, jobs):
                 done.append(row)
-                if isinstance(row, dict):
+                if isinstance(row, dict) and row["stop_reason"] != "llm_error":
                     rows[(row["task_id"], row["condition"])] = row
                     spent[0] += row["cost"]
                     f.write(json.dumps(row) + "\n")
                     f.flush()
+        if outage[0] > LLM_ERRORS:
+            raise RuntimeError(OUTAGE)
         return "stop" not in done
 
     # ponytail: one episode per task x condition, so model sampling noise is inside every paired difference.
@@ -396,14 +414,15 @@ def _rebuild(eval_dir: Path, rows: list, task_by: dict) -> tuple:
     """-> (every row as the current graders give it, regrade note or None). Every row must be rebuilt from its
     raw files or there is no report: field for field when it was written by this grader version; in every
     field no grader decides (FACTS) when it was written by an older one, whose rewards are then replaced."""
-    batch, rebuilt, bad, old = list(task_by.values()), [], [], []
+    rebuilt, bad, old = [], [], []
     for row in rows:
         try:
-            new = _episode(task_by[row["task_id"]], row["condition"], None, eval_dir, None, batch)
+            new = _episode(task_by[row["task_id"]], row["condition"], None, eval_dir, None)
         except (KeyError, OSError, ValueError):
             new = None
         current = row.get("grader_version") == GRADER_VERSION
-        if new is None or (new != row if current else any(new[k] != row.get(k) for k in FACTS)):
+        # Compared on the fields a row has now: rows written before the failure classifier was removed carry more.
+        if new is None or any(new[k] != row.get(k) for k in (new if current else FACTS)):
             bad.append(f"{row['condition']}/{row['task_id']}")
             continue
         rebuilt.append(new)
@@ -464,7 +483,7 @@ def show_p(p: float) -> str:
 def summarize(eval_dir) -> dict:
     """Everything the report prints, recomputed from results.jsonl, tasks.jsonl and the run folders."""
     eval_dir = Path(eval_dir).resolve()
-    written, task_by = _jsonl(eval_dir / "results.jsonl"), {t["id"]: t for t in _jsonl(eval_dir / "tasks.jsonl")}
+    written, task_by = _rows(eval_dir), {t["id"]: t for t in _jsonl(eval_dir / "tasks.jsonl")}
     rows = list({(r["task_id"], r["condition"]): r for r in written}.values())  # a re-run after a crash appends again: last wins
     rows, regraded = _rebuild(eval_dir, rows, task_by)
     by = {c: {r["task_id"]: r for r in rows if r["condition"] == c} for c in CONDITIONS if any(r["condition"] == c for r in rows)}
@@ -475,14 +494,12 @@ def summarize(eval_dir) -> dict:
            "duplicate_rows": len(written) - len(rows), "conditions": {}, "pairs": {}, "gate": None}
     for c, got in by.items():
         rewards = np.array([got[t]["reward"] for t in common], dtype=float)
-        failed = [got[t] for t in common if got[t]["reward"] < 1.0 and c != "null"]
         out["conditions"][c] = {
             "n": len(common), "accuracy": round(float(rewards.mean()), 4) if common else None,
             "ci95": interval(rewards) if common else None, "ci_method": "Wilson" if _binary(rewards) else "bootstrap",
             "cost_per_task": round(float(np.mean([got[t]["cost"] for t in common])), 6) if common else None,
             "cost_total": round(sum(r["cost"] for r in got.values()), 6),  # includes unpaired rows: money spent is money spent
-            "failure_kinds": {k: sum(r["failure_kind"] == k for r in failed) for k in KINDS},
-            "decoy_use": sum(bool(r.get("decoy_use")) for r in failed)}
+            "no_answer": sum(got[t]["stop_reason"] not in ("submitted", "null") for t in common)}
     for a, b in PAIRS:
         if a in by and b in by:
             out["pairs"][f"{a} vs {b}"] = {"n": len(common), **mcnemar(*([by[c][t]["reward"] for t in common] for c in (a, b)))}
@@ -517,16 +534,12 @@ def report(summary: dict, say=print) -> None:
             f"Rewards changed: {moved}. Re-graded rows: {regraded['file']} (results.jsonl is untouched).")
     if not summary["n_tasks"]:
         return
-    say(f"\n{'condition':<10}{'n':>4}{'accuracy':>10}{'95% interval':>16}{'$/task':>9}   failures: " + "  ".join(KINDS) + "  (decoy use)")
+    say(f"\n{'condition':<10}{'n':>4}{'accuracy':>10}{'95% interval':>16}{'$/task':>9}{'no answer':>11}")
     for name, c in summary["conditions"].items():
-        kinds = "-" if name == "null" else "  ".join(f"{c['failure_kinds'][k]:>{len(k)}}" for k in KINDS) + f"  ({c['decoy_use']})"
-        say(f"{name:<10}{c['n']:>4}{c['accuracy']:>10.1%}{c['ci95'][0]:>8.1%}-{c['ci95'][1]:<7.1%}{c['cost_per_task']:>9.4f}   {kinds}")
+        say(f"{name:<10}{c['n']:>4}{c['accuracy']:>10.1%}{c['ci95'][0]:>8.1%}-{c['ci95'][1]:<7.1%}{c['cost_per_task']:>9.4f}{c['no_answer']:>11}")
     methods = sorted({c["ci_method"] for c in summary["conditions"].values()})
     say(f"Intervals: {' and '.join(methods)} (Wilson score for 0/1 rewards; otherwise a percentile bootstrap over tasks, "
-        f"{BOOTSTRAPS:,} resamples, seed {BOOT_SEED}). Failure kinds are a heuristic read of the "
-        "trajectory: `use` = the reference value was in a tool result and the answer was still wrong; `gather` = it never "
-        "appeared; `unchecked` = the reference is a label or small integer that cannot be searched for. `decoy use` counts "
-        "failed episodes where another task's reference was found the same way: read `use` against that chance level.")
+        f"{BOOTSTRAPS:,} resamples, seed {BOOT_SEED}). `no answer` counts episodes that ended without an accepted submission.")
     if summary["pairs"]:
         say(f"\nPaired comparisons on the same {summary['n_tasks']} tasks (exact two-sided test on the discordant pairs):")
     for name, p in summary["pairs"].items():

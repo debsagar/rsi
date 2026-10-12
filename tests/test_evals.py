@@ -1,5 +1,4 @@
-"""Evaluation suite: benchmark validity, the external graders, the failure classifier,
-and the eval runner end to end.
+"""Evaluation suite: benchmark validity, the external graders and the eval runner end to end.
 
 No Docker, no keys and no paid call: `run` is a scripted stand-in for
 broker.run_episode that writes the same files, except two tests that drive the
@@ -8,7 +7,7 @@ downloaded DABench and QRData copies and are skipped when a source is absent;
 the report test re-derives three real eval folders under runs/evals and is
 skipped where they are absent.
 
-Each grader and the classifier has one table: every row is a way it could
+Each grader has one table: every row is a way it could
 score a reply wrongly, written down before the rule that prevents it. The
 junk sweep pins what constant and malformed answers earn on every real row.
 """
@@ -22,7 +21,7 @@ from conftest import source
 from fakes import fake_jev, scripted_llm
 from scipy.stats import binom, binomtest
 
-from rsi import broker, evals, tasks
+from rsi import broker, evals, grading, tasks
 
 DA_BROKEN = {"dabench-116", "dabench-273", "dabench-352", "dabench-473", "dabench-734"}
 REAL = Path(__file__).resolve().parents[1] / "runs" / "evals"
@@ -107,7 +106,7 @@ def test_every_dabench_question_has_a_readable_csv_and_a_parsable_label(dabench)
         names = [name for name, _ in answers]
         # A label parses when the benchmark's own @name[value] reading returns it and it has one spelling:
         # an empty value and a value holding a bracket are both an empty list cut by that regex.
-        echoed = dict(evals.DA_ITEM_RE.findall(" ".join(f"@{n}[{v}]" for n, v in answers)))
+        echoed = dict(grading.DA_ITEM_RE.findall(" ".join(f"@{n}[{v}]" for n, v in answers)))
         if (not answers or len(set(names)) < len(names) or echoed != dict(answers)
                 or any(not v.strip() or set(v) & set("[]") for _, v in answers)):
             bad_label.add(f"dabench-{q['id']}")
@@ -296,7 +295,7 @@ QR_ROWS = [  # (task, reply, expected reward, the failure this row would expose)
 def test_dabench_grader_table():
     wrong = [(why, reply) for values, reply, want, why in DA_ROWS if evals.grade(DA(*values), reply) != want]
     assert not wrong, wrong
-    assert evals.grade_parts(DA("5", "6", "7"), "ANSWER: @v0[5] @v2[7]") == {"v0": True, "v1": False, "v2": True}
+    assert grading.grade_parts(DA("5", "6", "7"), "ANSWER: @v0[5] @v2[7]") == {"v0": True, "v1": False, "v2": True}
 
 
 def test_qrdata_grader_table():
@@ -342,73 +341,6 @@ def test_junk_answers_on_every_real_benchmark_row(dabench, qrdata):
     assert sum(evals.grade(t, evals.null_guess(t)) for t in choices) == 51                   # the first-option baseline
 
 
-# --- failure classification ---------------------------------------------------------
-
-def write_run(run_dir, results, full_text=None) -> Path:
-    run_dir.mkdir(parents=True)
-    events = [{"id": i + 1, "kind": "tool_result", "tool": "python", "result": text, "clipped": False} for i, text in enumerate(results)]
-    if full_text is not None:
-        events.append({"id": len(events) + 1, "kind": "tool_result", "tool": "python", "result": "head [... clipped ...] tail",
-                       "clipped": True, "file": "tool-009.txt"})
-        (run_dir / "tool-009.txt").write_text(full_text)
-    (run_dir / "events.jsonl").write_text("".join(json.dumps(e) + "\n" for e in events))
-    return run_dir
-
-
-WRONG = {"answer": "ANSWER: @v0[1]", "stop_reason": "submitted"}
-TWO = DA("34.65", "14.45")
-LABEL = {"id": "g", "family": "generated", "reference": "A_higher"}
-PERCENT = QR("12.5%")
-AGES = "Age: 22.0 38.0 26.0 35.0 36.0 54.0 49.0 28.0"
-CLASSIFY_ROWS = [  # (task, episode, tool results, decoy task or None, expected (kind, evidence event), the failure exposed)
-    (TWO, {"answer": None, "stop_reason": "no_submit"}, ["34.65 14.45"], None, ("no_answer", None), "nothing submitted"),
-    (TWO, {"answer": "x", "stop_reason": "run_limit"}, ["34.65 14.45"], None, ("no_answer", None), "stopped by a limit"),
-    (TWO, WRONG, [], None, ("gather", None), "no tool result at all"),
-    (TWO, WRONG, ["mean 34.6532", "median=14.4542"], None, ("use", 1), "values that round to the reference"),
-    (TWO, WRONG, ["mean 34.6532", "median 14.9"], None, ("gather", None), "one of two values missing"),
-    (TWO, WRONG, ["x134.65 col34.65 134.65", "14.45"], None, ("gather", None), "digits inside a longer token"),
-    (TWO, WRONG, ["ERROR 34.65 14.45"], None, ("gather", None), "an error message is not evidence"),
-    (DA("34.65", "7"), WRONG, ["mean 34.65 over 7 rows"], None, ("unchecked", 1), "a one-digit part is never searched for"),
-    (DA("34.65", "7"), WRONG, ["7 rows"], None, ("gather", None), "the searchable part is missing"),
-    # 37 real no_tools failures were called `gather` although nothing in their reference can be searched for
-    (LABEL, WRONG, [], None, ("unchecked", None), "a label with no tool result"),
-    (LABEL, WRONG, ["ERROR no tools are available in this run"], None, ("unchecked", None), "a label under no_tools"),
-    (LABEL, WRONG, ["A_higher"], None, ("unchecked", None), "a label is a plain word"),
-    (QR("C", "abc"), WRONG, ["C"], None, ("unchecked", None), "an option letter"),
-    (QR("1691"), WRONG, ["total 1700.0"], None, ("use", 1), "within the grader's 3%"),
-    (QR("1691"), WRONG, ["total 1800"], None, ("gather", None), "outside it"),
-    ({"id": "g", "family": "generated", "reference": 0.512}, WRONG, ['"pearson_r": 0.5117'], None, ("use", 1), "generated, 1%"),
-    (DA("2021"), WRONG, ["date 2021-05-14 open 3.1"], None, ("gather", None), "a year inside a date"),
-    (DA("204"), WRONG, ["203  Smith\n204  Jones\n205  Lee"], None, ("gather", None), "the index column of a printed table"),
-    (DA("204"), WRONG, ["0  17  204\n1  18  233"], None, ("use", 1), "the same number in a data column"),
-    (DA("1234.5"), WRONG, ["total: 1,234.5"], None, ("use", 1), "thousands separator in tool output"),
-    (DA("234.5"), WRONG, ["id,value\n1,234.5"], None, ("use", 1), "CSV cells are not a thousands group"),
-    (DA("1500"), WRONG, ["bin 1200-1500 count 7"], None, ("use", 1), "a range dash is not a minus"),
-    (DA("5949.08"), WRONG, ["mean-5949.08"], None, ("use", 1), "a hyphen before the value"),
-    (PERCENT, WRONG, ["share = 12.5%"], None, ("use", 1), "percent reference printed as a percent"),
-    (PERCENT, WRONG, ["share = 0.125"], None, ("use", 1), "percent reference printed as a fraction"),
-    (QR("0.00012"), WRONG, ["p = 1.2e-04"], None, ("use", 1), "scientific notation in tool output"),
-    # The chance control must be able to match what the reference can: raw cells. (x1.37 gave 49.3, which never can.)
-    (DA("36.0"), WRONG, [AGES], None, ("use", 1), "a round reference that is a raw data cell"),
-    (DA("36.0"), WRONG, [AGES], DA("49.0"), ("use", 1), "the decoy is searched exactly as hard"),
-    (DA("36.0"), WRONG, [AGES], DA("77.7"), ("gather", None), "a decoy that is absent"),
-]
-
-
-def test_failure_classifier_table(tmp_path):
-    wrong = []
-    for i, (task, episode, results, decoy, want, why) in enumerate(CLASSIFY_ROWS):
-        got = evals.classify(task, episode, write_run(tmp_path / str(i), results), decoy)
-        if got != want:
-            wrong.append((why, got))
-    assert not wrong, wrong
-    clipped = write_run(tmp_path / "clipped", ["14.45"], full_text="a\n" * 3000 + "34.65")
-    assert evals.classify(TWO, WRONG, clipped) == ("use", 2)             # a clipped result is read from its file
-    batch = [{**DA("36.0"), "id": "a"}, {**LABEL, "id": "b"}, {**DA("36.0"), "id": "c"}, {**DA("49.0"), "id": "d"}]
-    assert evals.decoy_for(batch[0], batch)["id"] == "d"                 # next searchable task with another reference
-    assert evals.decoy_for(batch[3], batch)["id"] == "a" and evals.decoy_for(batch[1], batch) is None
-
-
 # --- the report, re-derived from raw files --------------------------------------------
 
 # Accuracies of the three paid n=40 evals (gpt-5-mini, harness 000) under grader version 2. Version 1 reported
@@ -448,15 +380,9 @@ def test_report_of_a_real_eval_folder_is_recomputed_from_its_raw_files(family, t
         assert got["ci95"] == pytest.approx([low, high], abs=1e-4) and got["ci_method"] == "Wilson" and low < high
         assert got["cost_per_task"] == pytest.approx(cost, abs=1e-6)
         assert f"{c:<10}{40:>4}{k / 40:>10.1%}{low:>8.1%}-{high:<7.1%}{cost:>9.4f}" in printed
-        if c != "null":
-            failed = [episodes[c, t["id"]] for t in batch if reward[c, t["id"]] < 1.0]
-            silent = sum(not ep.get("answer") or ep["stop_reason"] != "submitted" for ep in failed)
-            assert sum(got["failure_kinds"].values()) == len(failed) and got["failure_kinds"]["no_answer"] == silent
-    # A label or an option letter cannot be searched for: such a failure is never `gather` or `use`.
-    words = {t["id"] for t in batch if isinstance(t["reference"], str) and t["family"] != "dabench" and t["level"] != "numerical"}
+        assert got["no_answer"] == (0 if c == "null" else sum(episodes[c, t["id"]]["stop_reason"] != "submitted" for t in batch))
     regraded = evals._jsonl(folder / f"results.regraded-v{evals.GRADER_VERSION}.jsonl")
     assert len(regraded) == 160 and all(r["grader_version"] == evals.GRADER_VERSION for r in regraded)
-    assert all(r["failure_kind"] in (None, "no_answer", "unchecked") for r in regraded if r["task_id"] in words)
     assert {(r["condition"], r["task_id"]): r["reward"] for r in regraded} == reward
 
     for name, got in summary["pairs"].items():
@@ -501,7 +427,8 @@ def test_report_of_a_real_eval_folder_is_recomputed_from_its_raw_files(family, t
 
 def test_run_eval_resumes_refuses_to_mix_and_audits_its_rows(tmp_path, harness, monkeypatch, capsys):
     """One folder through its life: a free null run, a paid run that dies after an episode is on disk but before
-    its row is written, another model trying to take the folder over, the resume, a duplicated row, a tampered row."""
+    its row is written, another model trying to take the folder over, a provider outage, the resume, a duplicated row,
+    a tampered row."""
     conditions = ["no_tools", "full", "no_gate"]
     monkeypatch.delenv("RSI_MODEL", raising=False)       # as `rsi eval --conditions null` runs: free, no model set
     free = evals.run_eval("generated", 4, ["null"], home=tmp_path, run=scripted_run(), harness=harness, say=SILENT)
@@ -525,6 +452,15 @@ def test_run_eval_resumes_refuses_to_mix_and_audits_its_rows(tmp_path, harness, 
         evals.run_eval("generated", 4, conditions, home=tmp_path, run=scripted_run(), harness=harness, say=SILENT)
 
     monkeypatch.setenv("RSI_MODEL", "model-A")
+    down = scripted_run()
+
+    def provider_down(task, harness_path, run_dir, files_dir=None, **overrides):
+        return {**down(task, harness_path, run_dir, files_dir, **overrides), "stop_reason": "llm_error", "answer": None}
+
+    with pytest.raises(RuntimeError, match="episodes in a row ended with llm_error"):
+        evals.run_eval("generated", 4, conditions, home=tmp_path, run=provider_down, harness=harness, say=SILENT)
+    assert len(down.log) <= 8                            # stopped after a few, not after all 12
+    assert all(r["condition"] == "null" for r in rows_of(free))    # an outage is no answer: no row, and all of it runs again
     wrong_once = lambda task: "ANSWER: 123456" if task["id"].endswith("3") else correct(task)  # noqa: E731
     resumed = scripted_run(answer={"no_gate": wrong_once})
     summary = evals.run_eval("generated", 4, conditions, home=tmp_path, run=resumed, harness=harness, say=SILENT)

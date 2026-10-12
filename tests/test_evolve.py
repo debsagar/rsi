@@ -69,8 +69,8 @@ def scripted_run(cost=0.01, fail_on=None):
         run_dir.mkdir(parents=True, exist_ok=True)
         with open(run_dir / "events.jsonl", "a") as f:  # appends, as the broker does
             f.write(json.dumps({"id": 1, "kind": "user", "text": task["question"]}) + "\n")
-            f.write(json.dumps({"id": 2, "kind": "tool_call", "tool": "describe_table", "args": {"name": "runs.csv"}}) + "\n")
-            f.write(json.dumps({"id": 3, "kind": "tool_result", "tool": "describe_table", "result": "TABLE " + "x" * 900}) + "\n")
+            f.write(json.dumps({"id": 2, "kind": "tool_call", "tool": "python", "args": {"name": "runs.csv"}}) + "\n")
+            f.write(json.dumps({"id": 3, "kind": "tool_result", "tool": "python", "result": "TABLE " + "x" * 900}) + "\n")
         if fail_on and fail_on(who, seed):
             raise RuntimeError("interrupted")
         assert (files_dir / task["files"][0]).is_file()  # the task's files are where the python tool would mount them
@@ -404,7 +404,7 @@ def test_the_reference_and_the_grader_details_never_reach_the_improver(tmp_path,
     assert prompt.count("#### Failure") == 3 and prompt.count("wrong-answer-") == 3
     assert prompt.count("#### Control") == 3 and prompt.count("its last ANSWER line has the form ANSWER: w-#") == 3
     assert prompt.count("RESULT (906 characters)") == 3 and prompt.count("RESULT TABLE xxx") == 3 and "OUTCOME: pass" in prompt
-    assert "Flags, counted by code over all 3 failed runs (shown or not): no compute tool was called: 0;" in prompt
+    assert "Flags, counted by code over all 3 failed runs (shown or not): the python tool was never called: 0;" in prompt
     assert prompt.count("GRADER FEEDBACK: an ANSWER line in the asked form, judged wrong") == 3
 
     # Generation 1 is shown generation 0's candidate through the history: the tasks it fixed and broke, and still no reference.
@@ -503,10 +503,10 @@ def test_the_improver_is_shown_the_end_of_each_record_as_inert_data_and_no_gradi
     assert "### No answer submitted: 1 of 2 failed runs" in prompt                 # a bare `ANSWER:` is no answer
     assert "ANSWER line is machine graded" in prompt
     # Flags are read from the events and the episode by code, per run and counted over all failed runs.
-    assert ("FLAGS: no compute tool was called; four or more read_file calls and no python call; the model-call limit was hit; "
+    assert ("FLAGS: the python tool was never called; four or more read_file calls and no python call; the model-call limit was hit; "
             "the last tool result was an error") in prompt
-    assert "FLAGS: no compute tool was called; the reply asks the user something or says it cannot run code\n" in prompt
-    assert ("over all 2 failed runs (shown or not): no compute tool was called: 2; four or more read_file calls and no python call: 1; "
+    assert "FLAGS: the python tool was never called; the reply asks the user something or says it cannot run code\n" in prompt
+    assert ("over all 2 failed runs (shown or not): the python tool was never called: 2; four or more read_file calls and no python call: 1; "
             "the model-call limit was hit: 1; no ANSWER line in the final reply: 0; the reply asks the user something or says it "
             "cannot run code: 1; the last tool result was an error: 1.") in prompt
     assert "GRADER FEEDBACK: the ANSWER line is empty" in prompt
@@ -573,19 +573,19 @@ def test_a_real_trajectory_and_what_the_improver_is_shown_of_it_do_not_hold_the_
     parent.write_text(BODY)
     run_dir = tmp_path / "runs/evolve/gen-0" / improver.sha(parent)[:12] / "t1"
     episode = broker.run_episode(task, broker.SEED_HARNESS, run_dir, files, in_docker=False, jev=fake_jev(0.9),
-                                 llm=scripted_llm([tool_call("list_files", {}), "A csv.\nANSWER: 4"]))
+                                 llm=scripted_llm([tool_call("read_file", {"name": "data.csv"}), "A csv.\nANSWER: 4"]))
     assert episode["stop_reason"] == "submitted"
     _, _, prompt = propose(tmp_path, "nothing", 1, failed=[(task, episode)])
     for held in ((run_dir / "events.jsonl").read_text(), (run_dir / "episode.json").read_text(), prompt):
         assert "SECRET-REF" not in held
-    assert "QUESTION: What is in the file?" in prompt and "CALL list_files" in prompt and "ANSWER: 4" in prompt  # the run is in it
+    assert "QUESTION: What is in the file?" in prompt and "CALL read_file" in prompt and "ANSWER: 4" in prompt  # the run is in it
 
 
 def test_a_reused_episode_is_graded_again_instead_of_trusting_its_stored_reward(tmp_path, monkeypatch):
-    run, said = scripted_run(), []
-    assert evolve.score_test(n=10, home=tmp_path, run=run, say=said.append)["score"] == 0.5
+    run, said, seed = scripted_run(), [], broker.current_harness(tmp_path)
+    assert evolve.compare("generated", 10, seed, home=tmp_path, run=run, say=said.append)["score"] == 0.5
     monkeypatch.setattr(tasks, "grade", lambda task, text: 0.0)  # the grader was corrected after these episodes ran
-    out = evolve.score_test(n=10, home=tmp_path, run=run, say=said.append)
+    out = evolve.compare("generated", 10, seed, home=tmp_path, run=run, say=said.append)
     assert out["score"] == 0.0 and len(run.log) == 10  # re-graded from the stored answers, nothing run again
     assert said[-1].startswith("5 finished episodes hold a reward in episode.json that differs")
 
@@ -650,7 +650,7 @@ def test_dabench_test_and_compare_use_the_test_pool_capped_at_its_size(dabench_h
     test_ids = [task["id"] for task in evals.pool("dabench", "test", dabench_home)]
     splits = secret_pools(monkeypatch)
     run, said = scripted_run(), []
-    out = evolve.score_test("dabench", 12, home=dabench_home, run=run, say=said.append)
+    out = evolve.compare("dabench", 12, broker.current_harness(dabench_home), home=dabench_home, run=run, say=said.append)
     assert out["seeds"] == list(out["rewards"]) == test_ids[:12] and set(splits) == {"test"}
     assert out["null_score"] == 0.0 and out["score"] == pytest.approx(sum(out["rewards"].values()) / 12, abs=1e-4)
     assert "SECRET" not in Path(out["results"]).read_text() and "000.py on 12 dabench test tasks" in said[0]
@@ -668,24 +668,23 @@ def run_cli(monkeypatch, *argv):
     cli.main()
 
 
-def test_cli_evolve_and_test_run_end_to_end(tmp_path, monkeypatch, capsys):
+def test_cli_evolve_and_compare_run_end_to_end(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("RSI_HOME", str(tmp_path))
     monkeypatch.setattr(cli, "preflight", lambda *names: None)
     run = scripted_run()
     monkeypatch.setattr(evolve, "evolve", partial(evolve.evolve, run=run, llm=scripted_llm([reply("LEVEL = 8\n")])))
-    monkeypatch.setattr(evolve, "score_test", partial(evolve.score_test, run=run))
+    monkeypatch.setattr(evolve, "compare", partial(evolve.compare, run=run))
     run_cli(monkeypatch, "evolve", "--train", "8", "--val", "20", "--candidates", "1", "--budget", "2")
     out = capsys.readouterr().out
     assert "Adopted 001.py" in out and "spent $1.34 of $2.00" in out
-    run_cli(monkeypatch, "test", "--n", "10")
+    seed, adopted = (str(tmp_path / "harnesses" / name) for name in ("000.py", "001.py"))
+    run_cli(monkeypatch, "compare", "--n", "10", "--a", adopted)
     assert "001.py on 10 generated test tasks: 80%" in capsys.readouterr().out
     ran = len(run.log)
-    run_cli(monkeypatch, "test", "--n", "10")
+    run_cli(monkeypatch, "compare", "--n", "10", "--a", adopted)
     assert "001.py on 10 generated test tasks: 80%" in capsys.readouterr().out and len(run.log) == ran  # reused, not re-run
-    seed, adopted = (str(tmp_path / "harnesses" / name) for name in ("000.py", "001.py"))
-    run_cli(monkeypatch, "test", "--n", "10", "--harness", seed)
+    run_cli(monkeypatch, "compare", "--n", "10", "--a", seed)
     assert "000.py on 10 generated test tasks: 50%" in capsys.readouterr().out
-    monkeypatch.setattr(evolve, "compare", partial(evolve.compare, run=run))
     run_cli(monkeypatch, "compare", "--family", "generated", "--n", "10", "--a", seed, "--b", adopted)
     out = capsys.readouterr().out
     assert "A 000.py" in out and "B 001.py" in out and "A right where B was wrong on 0, the reverse on 3" in out
@@ -695,8 +694,8 @@ def test_cli_evolve_and_test_run_end_to_end(tmp_path, monkeypatch, capsys):
 
 
 @pytest.mark.parametrize("argv, message", [
-    (["test", "--n", "0"], "rsi: --n must be at least 1"),
-    (["test", "--family", "dabench", "--n", "-3"], "rsi: --n must be at least 1"),
+    (["compare", "--a", "x.py", "--n", "0"], "rsi: --n must be at least 1"),
+    (["compare", "--a", "x.py", "--family", "dabench", "--n", "-3"], "rsi: --n must be at least 1"),
     (["evolve", "--val", "1"], "rsi: need --val >= 2"),
     (["evolve", "--budget", "nan"], "rsi: --budget must be a finite number of dollars"),
     (["evolve", "--budget", "inf"], "rsi: --budget must be a finite number of dollars"),

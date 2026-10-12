@@ -1,8 +1,5 @@
 // Every backend call goes through request<T>() or streamSse().
-// With NEXT_PUBLIC_MOCK=1 the same code paths run against lib/mock.ts, which
-// returns real Response objects, so the SSE parser is exercised either way.
 
-import { mockFetch } from "@/lib/mock";
 import type {
   DonePayload,
   Episode,
@@ -17,8 +14,6 @@ export const API_BASE = (
   process.env.NEXT_PUBLIC_API_BASE ?? "http://127.0.0.1:8000"
 ).replace(/\/$/, "");
 
-export const IS_MOCK = process.env.NEXT_PUBLIC_MOCK === "1";
-
 export class ApiError extends Error {
   status: number;
   constructor(message: string, status: number) {
@@ -29,7 +24,7 @@ export class ApiError extends Error {
 }
 
 function send(path: string, init?: RequestInit): Promise<Response> {
-  return IS_MOCK ? mockFetch(path, init) : fetch(`${API_BASE}${path}`, init);
+  return fetch(`${API_BASE}${path}`, init);
 }
 
 async function failure(res: Response): Promise<ApiError> {

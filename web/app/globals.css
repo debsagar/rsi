@@ -1,5 +1,4 @@
 @import "tailwindcss";
-@import "tw-animate-css";
 @import "shadcn/tailwind.css";
 
 @custom-variant dark (&:is(.dark *));
@@ -295,6 +294,16 @@
   color: var(--muted-text);
   padding-left: 0.9em;
   border-left: 2px solid var(--line);
+}
+
+.tooltip-pop[data-open] {
+  animation: tooltip-in 150ms ease-out;
+}
+@keyframes tooltip-in {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
 }
 
 .skeleton {

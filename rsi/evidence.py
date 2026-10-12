@@ -48,10 +48,10 @@ LEDGER_TASKS = 5             # tasks listed per stage and direction in a ledger
 LINEAGE = "lineage.jsonl"
 KINDS = ("no answer submitted", "wrong answer")
 GRADED_TOOLS = ("submit_laws",)  # their result is the grader's verdicts and score
-COMPUTE_TOOLS = ("python", "describe_table", "compare_groups", "correlate")
 # Measured on 96 seed-harness episodes (24 failures, 72 passes), hits on failures / false alarms on passes:
-# 10/0, 10/0, 13/1, 13/0, 8/0, 1/0. ASKS_RE is the pattern those counts were made with.
-FLAGS = ("no compute tool was called", "four or more read_file calls and no python call", "the model-call limit was hit",
+# 10/0, 10/0, 13/1, 13/0, 8/0, 1/0. ASKS_RE is the pattern those counts were made with. (The first flag then
+# also counted three table tools, since removed, as python.)
+FLAGS = ("the python tool was never called", "four or more read_file calls and no python call", "the model-call limit was hit",
          "no ANSWER line in the final reply", "the reply asks the user something or says it cannot run code",
          "the last tool result was an error")
 ASKS_RE = re.compile(r"\bshall i\b|\bmay i\b|please (choose|tell|confirm)|do you want|would you like|can ?not (execute|run)"
@@ -113,7 +113,7 @@ def flags(episode: dict, events: list) -> list:
     called = [e.get("tool") for e in events if e.get("kind") == "tool_call"]
     results = [e.get("result") for e in events if e.get("kind") == "tool_result"]
     answer = episode.get("answer") or ""
-    hold = (not any(tool in COMPUTE_TOOLS for tool in called),
+    hold = ("python" not in called,
             called.count("read_file") >= 4 and "python" not in called,
             (episode.get("calls") or 0) >= broker.MODEL_CALL_LIMIT,
             grading.answer_line(answer) is None,

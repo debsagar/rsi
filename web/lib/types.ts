@@ -55,7 +55,6 @@ export type TrajectoryEvent = {
   chars_shown?: number;
   clipped?: boolean;
   file?: string;
-  simulated?: boolean;
   elapsed?: number;
   // judge
   source?: "harness" | "gate";

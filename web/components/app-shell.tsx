@@ -9,7 +9,6 @@ import { SessionList } from "@/components/session-list";
 import { TrajectoryTimeline } from "@/components/trajectory-timeline";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
-  IS_MOCK,
   createSession,
   getHarnesses,
   getSession,
@@ -306,11 +305,6 @@ export function AppShell() {
         <h1 className="font-heading text-base leading-none font-bold tracking-tight">RSI</h1>
         <span className="text-[13px] text-muted-foreground max-sm:hidden">Science assistant</span>
         <div className="ml-auto flex items-center gap-2">
-          {IS_MOCK ? (
-            <span className="rounded-[4px] border border-k-jev/50 px-1.5 py-0.5 text-xs font-medium text-k-jev">
-              Mock data
-            </span>
-          ) : null}
           <button
             type="button"
             onClick={() => {

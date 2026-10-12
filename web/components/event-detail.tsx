@@ -1,6 +1,6 @@
 "use client";
 
-import { ChevronLeft, ChevronRight, FlaskConical, Scissors, ShieldX, TriangleAlert } from "lucide-react";
+import { ChevronLeft, ChevronRight, Scissors, ShieldX, TriangleAlert } from "lucide-react";
 import type { ReactNode } from "react";
 import { EventGlyph } from "@/components/event-glyph";
 import { Badge } from "@/components/ui/badge";
@@ -263,19 +263,13 @@ export function EventDetail({
             </Button>
           </div>
         </div>
-        {event.clipped || event.simulated || isRejected(event) || event.unsupported ? (
+        {event.clipped || isRejected(event) || event.unsupported ? (
           <div className="flex flex-wrap gap-1.5">
             {event.clipped ? (
               <Badge variant="outline" className="h-auto min-h-5 bg-raised whitespace-normal">
                 <Scissors aria-hidden />
                 Clipped: {fmtInt(event.chars_shown)} of {fmtInt(event.chars_full)} characters shown. Full text saved as{" "}
                 {event.file ?? "a file in the run folder"}.
-              </Badge>
-            ) : null}
-            {event.simulated ? (
-              <Badge variant="outline" className="h-auto min-h-5 bg-raised whitespace-normal">
-                <FlaskConical aria-hidden />
-                Simulated: fixture data, not a real lookup
               </Badge>
             ) : null}
             {isRejected(event) ? (

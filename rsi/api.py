@@ -58,7 +58,7 @@ app.add_middleware(CORSMiddleware, allow_origins=WEB_ORIGINS, allow_methods=["*"
 
 
 @app.exception_handler(RecursionError)
-def _too_deep(request: Request, exc: RecursionError):
+def _too_deep(request: Request, _exc: RecursionError):
     """A JSON body nested thousands of levels deep overflows the parser; that is the client's error."""
     return JSONResponse({"detail": "request body is nested too deeply"}, status_code=400)
 
